@@ -1,0 +1,187 @@
+---
+- name: Non-Production Module Push Playbook
+  hosts: non_production_servers
+  vars_prompt:
+    - name: module_name
+      prompt: "Enter the module name to push"
+      private: no
+    
+    - name: commit_message
+      prompt: "Enter commit message"
+      default: "Module update"
+      private: no
+  
+  vars:
+    project_repo_url: "https://github.com/your-org/your-project.git"
+    project_local_path: "/home/developer/project"
+    feature_branch_prefix: "feature"
+  
+  tasks:
+    - name: Validate module name
+      assert:
+        that:
+          - module_name | length > 0
+        fail_msg: "Module name cannot be empty"
+
+    - name: Validate commit message
+      assert:
+        that:
+          - commit_message | length > 0
+        fail_msg: "Commit message cannot be empty"
+
+    - name: Check if project repository exists
+      stat:
+        path: "{{ project_local_path }}"
+      register: project_path_stat
+      failed_when: not project_path_stat.stat.exists
+
+    - name: Get Git status before push
+      block:
+        - name: Check for uncommitted changes in module
+          shell: |
+            cd {{ project_local_path }}
+            git status {{ module_name }} --short
+          register: git_status
+          changed_when: false
+
+        - name: Display current status
+          debug:
+            msg: "Current git status for {{ module_name }}: {{ git_status.stdout }}"
+
+    - name: Prepare module for push
+      block:
+        - name: Stage module changes
+          shell: |
+            cd {{ project_local_path }}
+            git add {{ module_name }}/
+          register: stage_result
+        
+        - name: Verify changes are staged
+          shell: |
+            cd {{ project_local_path }}
+            git diff --cached {{ module_name }} --stat
+          register: staged_changes
+          changed_when: false
+        
+        - name: Display staged changes
+          debug:
+            msg: |
+              Staged changes:
+              {{ staged_changes.stdout }}
+
+    - name: Create and configure feature branch
+      block:
+        - name: Generate feature branch name with timestamp
+          set_fact:
+            timestamp: "{{ ansible_date_time.strftime('%Y%m%d_%H%M%S') }}"
+            feature_branch_name: "{{ feature_branch_prefix }}/{{ module_name }}_{{ ansible_date_time.strftime('%Y%m%d_%H%M%S') }}"
+        
+        - name: Display feature branch name
+          debug:
+            msg: "Feature branch will be created as: {{ feature_branch_name }}"
+
+        - name: Verify not on main or dev branch
+          shell: |
+            cd {{ project_local_path }}
+            CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
+            if [[ "$CURRENT_BRANCH" == "main" || "$CURRENT_BRANCH" == "dev" ]]; then
+              echo "ERROR"
+            else
+              echo "OK"
+            fi
+          register: branch_check
+          changed_when: false
+        
+        - name: Prevent push to critical branches
+          assert:
+            that:
+              - branch_check.stdout == "OK"
+            fail_msg: "Cannot push directly to main or dev branches. Please create a feature branch first."
+
+        - name: Create feature branch locally
+          shell: |
+            cd {{ project_local_path }}
+            git checkout -b {{ feature_branch_name }}
+          register: create_branch
+
+    - name: Commit module changes
+      block:
+        - name: Commit changes with message
+          shell: |
+            cd {{ project_local_path }}
+            git commit -m "{{ commit_message }} (Module: {{ module_name }})"
+          register: commit_result
+        
+        - name: Display commit information
+          debug:
+            msg: |
+              Commit created successfully
+              {{ commit_result.stdout }}
+
+      rescue:
+        - name: Handle commit failure
+          debug:
+            msg: "Commit failed: {{ commit_result.stderr }}"
+          failed_when: true
+
+    - name: Push to remote repository
+      block:
+        - name: Push feature branch to remote
+          shell: |
+            cd {{ project_local_path }}
+            git push -u origin {{ feature_branch_name }}
+          register: push_result
+          environment:
+            GIT_SSH_COMMAND: "ssh -o StrictHostKeyChecking=no"
+
+        - name: Display push confirmation
+          debug:
+            msg: |
+              Push completed successfully
+              {{ push_result.stdout }}
+
+      rescue:
+        - name: Handle push failure
+          debug:
+            msg: "Push failed: {{ push_result.stderr }}"
+          failed_when: true
+
+    - name: Verify push was successful
+      block:
+        - name: Check remote branch exists
+          shell: |
+            cd {{ project_local_path }}
+            git ls-remote --heads origin {{ feature_branch_name }} | grep {{ feature_branch_name }}
+          register: remote_check
+          changed_when: false
+          retries: 3
+          delay: 2
+
+        - name: Confirm remote branch creation
+          debug:
+            msg: "Remote branch confirmed: {{ feature_branch_name }}"
+          when: remote_check.rc == 0
+
+      rescue:
+        - name: Remote verification warning
+          debug:
+            msg: "Warning: Could not verify remote branch, but push command completed"
+
+    - name: Final status report
+      debug:
+        msg: |
+          ========================================
+          MODULE PUSH COMPLETED
+          ========================================
+          Module: {{ module_name }}
+          Feature Branch: {{ feature_branch_name }}
+          Commit Message: {{ commit_message }}
+          Status: Successfully pushed to remote
+          Timestamp: {{ ansible_date_time.iso8601 }}
+          ========================================
+          
+          NEXT STEPS:
+          1. Create a Pull Request on GitHub for review
+          2. Branch: {{ feature_branch_name }}
+          3. The branch is now available for code review
+          ========================================

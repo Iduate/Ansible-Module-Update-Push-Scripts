@@ -1,0 +1,70 @@
+---
+# Common variables for module update and push operations
+# These can be used across playbooks
+
+# Repository Configuration
+git_config:
+  repo_url: "https://github.com/your-org/your-project.git"
+  main_branch: "main"
+  dev_branch: "dev"
+  default_timeout: 300
+
+# Production Settings
+production:
+  project_path: "/opt/project"
+  backup_base_path: "/opt/backups"
+  backup_retention_days: 30
+  service_check_timeout: 60
+  health_check_endpoint: "http://localhost:8080/health"
+
+# Non-Production Settings
+non_production:
+  project_path: "/home/developer/project"
+  feature_branch_prefix: "feature"
+  auto_delete_old_branches: false
+  max_feature_branches: 50
+
+# Logging
+logging:
+  log_level: "INFO"  # DEBUG, INFO, WARNING, ERROR
+  log_path: "./logs"
+  archive_logs: true
+  archive_age_days: 30
+
+# Notification Settings (Optional)
+notifications:
+  enabled: false
+  slack_webhook: ""
+  email_on_success: false
+  email_on_failure: true
+  failure_recipients:
+    - "devops@example.com"
+    - "ops-team@example.com"
+
+# Module Update Specific
+module_update:
+  create_backup: true
+  backup_format: "tar.gz"  # or "copy" for directory copy
+  verify_after_update: true
+  rollback_on_failure: true
+  health_check_retries: 3
+  health_check_delay: 10
+
+# Module Push Specific
+module_push:
+  auto_create_pr: false
+  pr_reviewers: []
+  pr_labels: ["module-update", "auto-generated"]
+  validate_branch_name: true
+  enforce_commit_template: true
+  required_commit_fields:
+    - "module"
+    - "description"
+
+# Performance Settings
+performance:
+  parallel_tasks: 5
+  command_timeout: 600
+  connection_timeout: 30
+  retries: 3
+  retry_delay: 5

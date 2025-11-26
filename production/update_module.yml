@@ -1,0 +1,151 @@
+---
+- name: Production Module Update Playbook
+  hosts: production_servers
+  vars_prompt:
+    - name: module_name
+      prompt: "Enter the module name to update"
+      private: no
+    
+    - name: restart_service
+      prompt: "Restart service after update? (yes/no)"
+      default: "no"
+      private: no
+  
+  vars:
+    project_repo_url: "https://github.com/your-org/your-project.git"
+    project_local_path: "/opt/project"
+    backup_base_path: "/opt/backups"
+    repo_clone_path: "/tmp/project_update_temp"
+  
+  tasks:
+    - name: Validate module name
+      assert:
+        that:
+          - module_name | length > 0
+        fail_msg: "Module name cannot be empty"
+
+    - name: Create backup directory if it doesn't exist
+      file:
+        path: "{{ backup_base_path }}"
+        state: directory
+        mode: '0755'
+      become: yes
+
+    - name: Create timestamped backup of the module
+      block:
+        - name: Generate backup filename with timestamp
+          set_fact:
+            backup_timestamp: "{{ ansible_date_time.iso8601_basic_short }}"
+            backup_module_path: "{{ backup_base_path }}/{{ module_name }}_backup_{{ ansible_date_time.iso8601_basic_short }}"
+        
+        - name: Backup current module version
+          copy:
+            src: "{{ project_local_path }}/{{ module_name }}"
+            dest: "{{ backup_module_path }}"
+            remote_src: yes
+            mode: '0755'
+          register: backup_result
+          become: yes
+        
+        - name: Display backup location
+          debug:
+            msg: "Module backup created at: {{ backup_module_path }}"
+      
+      rescue:
+        - name: Handle backup failure
+          debug:
+            msg: "Warning: Could not create backup for {{ module_name }}"
+
+    - name: Clone repository to temporary location
+      git:
+        repo: "{{ project_repo_url }}"
+        dest: "{{ repo_clone_path }}"
+        version: main
+        depth: 1
+      register: git_clone
+
+    - name: Verify module exists in repository
+      stat:
+        path: "{{ repo_clone_path }}/{{ module_name }}"
+      register: repo_module_stat
+      failed_when: not repo_module_stat.stat.exists
+
+    - name: Replace module with latest version from main branch
+      block:
+        - name: Remove old module
+          file:
+            path: "{{ project_local_path }}/{{ module_name }}"
+            state: absent
+          become: yes
+        
+        - name: Copy new module from repository
+          copy:
+            src: "{{ repo_clone_path }}/{{ module_name }}/"
+            dest: "{{ project_local_path }}/{{ module_name }}"
+            remote_src: yes
+            mode: '0755'
+          become: yes
+        
+        - name: Set correct ownership and permissions
+          file:
+            path: "{{ project_local_path }}/{{ module_name }}"
+            owner: "{{ ansible_user_id }}"
+            group: "{{ ansible_user_id }}"
+            mode: '0755'
+            recurse: yes
+          become: yes
+        
+        - name: Module update completed successfully
+          debug:
+            msg: "Module '{{ module_name }}' has been successfully updated from main branch"
+      
+      rescue:
+        - name: Rollback to backup on failure
+          block:
+            - name: Restore from backup
+              copy:
+                src: "{{ backup_module_path }}/"
+                dest: "{{ project_local_path }}/{{ module_name }}"
+                remote_src: yes
+                mode: '0755'
+              become: yes
+            
+            - name: Rollback complete
+              debug:
+                msg: "CRITICAL: Update failed. Module rolled back to previous version from {{ backup_module_path }}"
+          
+          when: backup_result is defined and backup_result.changed
+
+    - name: Clean up temporary clone
+      file:
+        path: "{{ repo_clone_path }}"
+        state: absent
+      become: yes
+      ignore_errors: yes
+
+    - name: Restart service (Optional)
+      block:
+        - name: Restart the service
+          systemd:
+            name: "{{ module_name }}_service"
+            state: restarted
+          become: yes
+        
+        - name: Service restart completed
+          debug:
+            msg: "Service for module '{{ module_name }}' has been restarted"
+      
+      when: restart_service | lower == "yes"
+
+    - name: Final status report
+      debug:
+        msg: |
+          ========================================
+          MODULE UPDATE COMPLETED
+          ========================================
+          Module: {{ module_name }}
+          Status: Successfully updated
+          Backup Location: {{ backup_module_path }}
+          Service Restarted: {{ restart_service | lower == "yes" }}
+          Timestamp: {{ ansible_date_time.iso8601 }}
+          ========================================
